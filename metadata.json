@@ -1,0 +1,11 @@
+{
+  "name": "VEGA AI",
+  "description": "VEGA AI - Intelligent multimodal AI assistant with text chat, real-time voice, AI Image Generator, and AI Video Studio with multi-scene storyboard editing, overlays, voiceover, and export.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
