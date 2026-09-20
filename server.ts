@@ -61,6 +61,54 @@ function checkHalalCompliance(prompt: string): { isHalal: boolean; reason?: stri
   return { isHalal: true };
 }
 
+// Safely resolve image inputs (URL, data URI, base64) to valid Gemini inlineData
+async function resolveImageToInlineData(imgStr: string | undefined): Promise<{ mimeType: string; data: string } | null> {
+  if (!imgStr || typeof imgStr !== "string") return null;
+  const trimmed = imgStr.trim();
+  if (!trimmed) return null;
+
+  // 1. If it is an HTTP/HTTPS URL, download and convert to base64
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(trimmed, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const arrayBuffer = await res.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const contentType = res.headers.get("content-type") || "image/jpeg";
+      const mime = contentType.split(";")[0].trim() || "image/jpeg";
+      return {
+        mimeType: mime,
+        data: buffer.toString("base64"),
+      };
+    } catch (e) {
+      console.warn("Could not fetch remote image for inlineData:", e);
+      return null;
+    }
+  }
+
+  // 2. If it is a data URI (e.g. data:image/png;base64,xxxx)
+  if (trimmed.startsWith("data:")) {
+    const commaIdx = trimmed.indexOf(",");
+    if (commaIdx !== -1) {
+      const meta = trimmed.slice(5, commaIdx);
+      const mime = meta.split(";")[0] || "image/jpeg";
+      const b64 = trimmed.slice(commaIdx + 1);
+      return { mimeType: mime, data: b64 };
+    }
+  }
+
+  // 3. Raw base64 string
+  const cleanB64 = trimmed.replace(/\s+/g, "");
+  if (/^[A-Za-z0-9+/=]+$/.test(cleanB64) && cleanB64.length > 50) {
+    return { mimeType: "image/jpeg", data: cleanB64 };
+  }
+
+  return null;
+}
+
 // Multi-engine visual image generator with high resolution and zero rate-limiting fallback
 async function generateVisualImage(prompt: string, style?: string, aspectRatio: string = "1:1"): Promise<string> {
   const width = aspectRatio === "16:9" ? 1280 : aspectRatio === "9:16" ? 720 : 1024;
@@ -814,14 +862,13 @@ Output ONLY the final expanded prompt in 1-2 descriptive sentences, without quot
 
       const parts: any[] = [];
       if (referenceImage && typeof referenceImage === "string") {
-        const cleanB64 = referenceImage.includes(",") ? referenceImage.split(",")[1] : referenceImage;
-        parts.push({
-          inlineData: {
-            mimeType: "image/jpeg",
-            data: cleanB64,
-          },
-        });
-        promptInstruction += `\nThe user provided a reference photo. Analyze the subject and composition, and create a stylized adaptation prompt applying the user's requested style (${style}) and modifications: ${prompt}`;
+        const resolved = await resolveImageToInlineData(referenceImage);
+        if (resolved) {
+          parts.push({
+            inlineData: resolved,
+          });
+          promptInstruction += `\nThe user provided a reference photo. Analyze the subject and composition, and create a stylized adaptation prompt applying the user's requested style (${style}) and modifications: ${prompt}`;
+        }
       }
       parts.push({ text: `Prompt: ${prompt}` });
 
@@ -958,14 +1005,13 @@ STRICT INSTRUCTIONS:
 
     const parts: any[] = [];
     if (referenceImage && typeof referenceImage === "string") {
-      const cleanB64 = referenceImage.includes(",") ? referenceImage.split(",")[1] : referenceImage;
-      parts.push({
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: cleanB64,
-        },
-      });
-      directorPrompt += `\nThe user provided a reference starting photo. Ensure Scene 1 incorporates this photo or its aesthetic seamlessly.`;
+      const resolved = await resolveImageToInlineData(referenceImage);
+      if (resolved) {
+        parts.push({
+          inlineData: resolved,
+        });
+        directorPrompt += `\nThe user provided a reference starting photo. Ensure Scene 1 incorporates this photo or its aesthetic seamlessly.`;
+      }
     }
     parts.push({ text: `Create the ${numScenes}-scene video storyboard.` });
 
@@ -1037,7 +1083,11 @@ STRICT INSTRUCTIONS:
       let imgUrl = "";
 
       if (index === 0 && referenceImage && typeof referenceImage === "string") {
-        imgUrl = referenceImage.startsWith("data:") ? referenceImage : `data:image/jpeg;base64,${referenceImage}`;
+        if (referenceImage.startsWith("http://") || referenceImage.startsWith("https://") || referenceImage.startsWith("data:")) {
+          imgUrl = referenceImage;
+        } else {
+          imgUrl = `data:image/jpeg;base64,${referenceImage}`;
+        }
       } else {
         imgUrl = await generateVisualImage(sc.visualPrompt || prompt, style, aspectRatio);
       }
@@ -1081,6 +1131,24 @@ STRICT INSTRUCTIONS:
   }
 });
 
+// Google Search Console dynamic file verification endpoint (Instant owner verification)
+app.get(/^\/google([a-zA-Z0-9_-]+)\.html$/, (req, res) => {
+  const code = req.params[0];
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`google-site-verification: google${code}.html`);
+});
+
+// Explicit Sitemap.xml and Robots.txt routes
+app.get("/sitemap.xml", (_req, res) => {
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
+  res.sendFile(path.join(process.cwd(), "public", "sitemap.xml"));
+});
+
+app.get("/robots.txt", (_req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.sendFile(path.join(process.cwd(), "public", "robots.txt"));
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1101,4 +1169,10 @@ async function startServer() {
   });
 }
 
-startServer();
+// Standalone execution for local dev and Cloud Run containers
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app };
